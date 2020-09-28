@@ -1,0 +1,100 @@
+# Docker
+# Build a Docker image 
+# https://docs.microsoft.com/azure/devops/pipelines/languages/docker
+
+trigger: 
+    branches:
+        include:
+        - master
+        exclude:
+        - releases/*
+
+resources:
+- repo: self
+
+variables:
+  - name: tag 
+    value : '$(Build.BuildId)'
+  - name : stagingSlot
+    value : 'staging' 
+    # TO DO: for blue-green with WebApp we always deploy to staging.
+    # the 'swap' does the changes on the hosting side and no need to specify the service
+    # that is active like when doing blue/green with AKS.
+
+stages:
+- stage: DeployToStagingSlot
+  displayName: Build image of api-poi
+  jobs:  
+  - job: DeployToStaging
+    displayName: Build and deploy to staging
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+
+    - task: Docker@2
+      displayName: Build and push image to container registry
+      inputs:
+        containerRegistry: 'connect-acr-openhack8735rg'
+        repository: 'devopsoh/api-poi'
+        command: 'buildAndPush'
+        Dockerfile: 'apis/poi/web/Dockerfile'
+        tags: '$(tag)'
+
+    - task: AzureWebAppContainer@1
+      displayName: deploy to staging slot web-app
+      inputs:
+        azureSubscription: 'connect-openhack8735rg'
+        appName: 'openhack8735poi'
+        deployToSlotOrASE: true
+        resourceGroupName: 'openhack8735rg'
+        slotName: '$(stagingSlot)'
+        containers: 'openhack8735acr.azurecr.io/devopsoh/api-poi:$(tag)'
+    
+  - job: TestStaging
+    displayName: Test deployment to staging
+    pool:
+      vmImage: 'windows-latest'
+    steps:
+
+    - task: VisualStudioTestPlatformInstaller@1
+      inputs:
+        packageFeedSelector: 'nugetOrg'
+        versionSelector: 'latestPreRelease'
+
+    - task: DotNetCoreCLI@2
+      inputs:
+        command: 'build'
+        projects: '$(Build.SourcesDirectory)/apis/poi/poi.sln'
+    - task: VSTest@2
+      inputs:
+        testSelector: 'testAssemblies'
+        testAssemblyVer2: |
+          apis\poi\tests\IntegrationTests\bin\Debug\netcoreapp2.1\IntegrationTests.dll
+        searchFolder: '$(System.DefaultWorkingDirectory)'
+      # Run a Task the test and set it as a condition for next step
+      # https://docs.microsoft.com/en-us/azure/devops/pipelines/process/stages?view=azure-devops&tabs=yaml#conditions
+      # If not then abort and rollback i.e deploy previous version of image
+
+- stage: DeployToProductionSlot
+  displayName: swap staging slot to production
+  jobs:
+  - deployment: DeployProd
+    displayName: Deploy to production
+    pool:
+      vmImage: ubuntu-latest
+
+    environment: 'Production'
+
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+
+          - task: AzureAppServiceManage@0
+            inputs:
+              azureSubscription: 'connect-openhack8735rg'
+              Action: 'Swap Slots'
+              WebAppName: 'openhack8735poi'
+              ResourceGroupName: 'openhack8735rg'
+              SourceSlot: '$(stagingSlot)'
+
