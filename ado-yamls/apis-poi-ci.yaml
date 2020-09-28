@@ -1,0 +1,67 @@
+# Docker
+# Build a Docker image 
+# https://docs.microsoft.com/azure/devops/pipelines/languages/docker
+
+trigger: none
+
+resources:
+- repo: self
+
+variables:
+  tag: '$(Build.BuildId)'
+
+stages:
+- stage: CI_build_PR_mode
+  displayName: CI Build for Pull Requests
+  jobs:  
+  - job: RunUnitTest
+    displayName: Unit Tests job
+    pool:
+      vmImage: 'windows-latest'
+    steps:
+
+    - task: VisualStudioTestPlatformInstaller@1
+      inputs:
+        packageFeedSelector: 'nugetOrg'
+        versionSelector: 'latestPreRelease'
+
+    - task: DotNetCoreCLI@2
+      inputs:
+        command: 'build'
+        projects: '$(Build.SourcesDirectory)/apis/poi/poi.sln'
+    - task: VSTest@2
+      inputs:
+        testSelector: 'testAssemblies'
+        testAssemblyVer2: |
+          apis\poi\tests\UnitTests\bin\Debug\netcoreapp2.1\UnitTests.dll
+        searchFolder: '$(System.DefaultWorkingDirectory)'
+
+  # If Tests fail then create a ticket
+  - job: CheckTests
+    dependsOn: RunUnitTest
+    condition: failed()
+    steps:
+    
+    - task: CreateWorkItem@1
+      inputs:
+        workItemType: 'Bug'
+        title: 'Test failed in Build $(Build.BuildId)'
+  
+  # Only build image if the Tests succeed.
+  - job: BuildImage
+    dependsOn: RunUnitTest
+    condition: succeeded()
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+
+    - task: Docker@2
+      displayName: Build a docker image
+      inputs:
+        command: build
+        dockerfile: '$(Build.SourcesDirectory)/apis/poi/web/Dockerfile'
+        tags: |
+          $(tag)
+
+
+  
